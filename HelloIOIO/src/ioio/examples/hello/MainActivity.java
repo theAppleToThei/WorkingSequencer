@@ -1,9 +1,8 @@
 package ioio.examples.hello;
-
 /******************************************************************
  * VicsWagon Test Application with IOIO0503
- * Runs OK with single PWM frequency...adding new motor control
- * version 140308A
+ * Runs OK with changing FM period for speed control
+ * version 140311A...working with variable FM speed control
  * Copyright Wintriss Technical Schools 2014
  ******************************************************************/
 import ioio.lib.api.DigitalOutput;
@@ -12,8 +11,10 @@ import ioio.lib.api.PwmOutput;
 import ioio.lib.api.Sequencer;
 import ioio.lib.api.Sequencer.ChannelConfig;
 import ioio.lib.api.Sequencer.ChannelConfigBinary;
+import ioio.lib.api.Sequencer.ChannelConfigFmSpeed;
 import ioio.lib.api.Sequencer.ChannelConfigSteps;
 import ioio.lib.api.Sequencer.ChannelCueBinary;
+import ioio.lib.api.Sequencer.ChannelCueFmSpeed;
 import ioio.lib.api.Sequencer.ChannelCueSteps;
 import ioio.lib.api.Sequencer.Clock;
 import ioio.lib.api.exception.ConnectionLostException;
@@ -21,7 +22,6 @@ import ioio.lib.util.BaseIOIOLooper;
 import ioio.lib.util.IOIOLooper;
 import ioio.lib.util.android.IOIOActivity;
 import android.os.Bundle;
-import android.os.SystemClock;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.ToggleButton;
@@ -42,6 +42,7 @@ public class MainActivity extends IOIOActivity
 	private PwmOutput rightMotorClock;
 	private PwmOutput leftMotorClock;
 	private int pulseWidth = 10;// microseconds
+	private int rightStepperMotorPeriod = 60000;
 	private PulseInput front;
 	private PulseInput rear;
 	private PulseInput left;
@@ -53,6 +54,7 @@ public class MainActivity extends IOIOActivity
 	private DigitalOutput leftStrobe;
 	private DigitalOutput rightStrobe;
 	private DigitalOutput rightMotorDirection;
+	private int rightMotorSpeed;
 	private DigitalOutput leftMotorDirection;
 	private DigitalOutput halfFull;
 	private DigitalOutput motorEnable; // Must be true for motors to run.
@@ -75,17 +77,16 @@ public class MainActivity extends IOIOActivity
 	private static final int MOTOR_RESET = 22;// For both motors
 	private static final int MOTOR_CLOCK_LEFT_PIN = 27;
 	private static final int MOTOR_CLOCK_RIGHT_PIN = 28;
-	private int leftMotorPWMfrequency = 1000;
-	private int rightMotorPWMfrequency = 1000;
 	private DigitalOutput led_; // On-board led
+	private Sequencer sequencer_;
 	private Sequencer.ChannelCueBinary stepperDirCue_ = new ChannelCueBinary();
 	private Sequencer.ChannelCueSteps stepperStepCue_ = new ChannelCueSteps();
-	private Sequencer.ChannelCue[] cue_ = new Sequencer.ChannelCue[] {stepperDirCue_, stepperStepCue_};
-	private Sequencer sequencer_;
-	final ChannelConfigBinary stepperDirConfig = new Sequencer.ChannelConfigBinary(false, false,
-			new DigitalOutput.Spec(MOTOR_RIGHT_DIRECTION_OUTPUT_PIN));
+	private Sequencer.ChannelCueFmSpeed stepperFMspeedCue_ = new ChannelCueFmSpeed();
+	private Sequencer.ChannelCue[] cue_ = new Sequencer.ChannelCue[] {stepperFMspeedCue_};
+	final ChannelConfigBinary stepperDirConfig = new Sequencer.ChannelConfigBinary(false, false,new DigitalOutput.Spec(MOTOR_RIGHT_DIRECTION_OUTPUT_PIN));
 	final ChannelConfigSteps stepperStepConfig = new ChannelConfigSteps(new DigitalOutput.Spec(MOTOR_CLOCK_RIGHT_PIN));
-	final ChannelConfig[] config = new ChannelConfig[] { stepperDirConfig, stepperStepConfig };
+	final ChannelConfigFmSpeed stepperFMspeedConfig = new ChannelConfigFmSpeed(Clock.CLK_2M, 10, new DigitalOutput.Spec(MOTOR_CLOCK_RIGHT_PIN));
+	final ChannelConfig[] config = new ChannelConfig[] {stepperFMspeedConfig};
 
 	/**
 	 * Called when the activity is first created. Here we normally initialize
@@ -100,7 +101,6 @@ public class MainActivity extends IOIOActivity
 		log = (TextView) findViewById(R.id.log);
 		scroller = (ScrollView) findViewById(R.id.log_scroller);
 		log("onCreate");
-		// log(getString(R.string.wait_ioio));
 	}
 
 	/**
@@ -115,11 +115,6 @@ public class MainActivity extends IOIOActivity
 		/**
 		 * Called every time a connection with IOIO has been established.
 		 * Typically used to open pins.
-		 * 
-		 * @throws ConnectionLostException
-		 *             When IOIO connection is lost.
-		 * 
-		 * @see ioio.lib.util.AbstractIOIOActivity.IOIOThread#setup()
 		 */
 		@Override
 		protected void setup() throws ConnectionLostException
@@ -129,25 +124,13 @@ public class MainActivity extends IOIOActivity
 			reset = ioio_.openDigitalOutput(MOTOR_RESET);// resets the motor controller chip for both motors
 			reset.write(false);
 			reset.write(true);
-
 			motorControllerControl = ioio_.openDigitalOutput(MOTOR_CONTROLLER_CONTROL_PIN);
 			motorControllerControl.write(true);// Slow decay
-
 			halfFull = ioio_.openDigitalOutput(MOTOR_HALF_FULL_STEP_PIN);// both motors
 			halfFull.write(true);// True = half step
-
-			//			rightMotorDirection = ioio_.openDigitalOutput(MOTOR_RIGHT_DIRECTION_OUTPUT_PIN);
-			//			rightMotorDirection.write(true);
-
-			//			leftMotorDirection = ioio_.openDigitalOutput(MOTOR_LEFT_DIRECTION_OUTPUT_PIN);
-			//			leftMotorDirection.write(false);
-
 			motorEnable = ioio_.openDigitalOutput(MOTOR_ENABLE_PIN);// both motors
 			motorEnable.write(true);
-
-			//			rightMotorClockPulse = ioio_.openDigitalOutput(MOTOR_CLOCK_RIGHT_PIN);
 			log("motor ready");
-
 			try
 			{
 				sequencer_ = ioio_.openSequencer(config);
@@ -160,49 +143,12 @@ public class MainActivity extends IOIOActivity
 
 			} catch (Exception e)
 			{
-				e.printStackTrace();
 			}
-
 			log("sequencer started");
-			/*
-			 * When the setup() method is called the IOIO is connected.
-			 */
-			// ioiolog(getString(R.string.ioio_connected));
-
-			/*
-			 * Establish communication between the android and the VicsWagon via
-			 * the ioio board
-			 */
-			// log(getString(R.string.wait_create));
-			// log(getString(R.string.create_connected));
-
-			// rearStrobe = ioio.openDigitalOutput(REAR_STROBE_ULTRASONIC_OUTPUT_PIN, false);
-			// rear = ioio.openPulseInput(new DigitalInput.Spec(REAR_ULTRASONIC_INPUT_PIN),
-			// PulseInput.ClockRate.RATE_62KHz,PulseInput.PulseMode.POSITIVE, false);
-			// frontStrobe = ioio.openDigitalOutput(FRONT_STROBE_ULTRASONIC_OUTPUT_PIN, false);
-			// front = ioio.openPulseInput(new DigitalInput.Spec(FRONT_ULTRASONIC_INPUT_PIN),
-			// PulseInput.ClockRate.RATE_62KHz,PulseInput.PulseMode.POSITIVE,false);
-			// leftStrobe = ioio.openDigitalOutput(LEFT_STROBE_ULTRASONIC_OUTPUT_PIN, false);
-			// left = ioio.openPulseInput(new DigitalInput.Spec(LEFT_ULTRASONIC_INPUT_PIN),
-			// PulseInput.ClockRate.RATE_62KHz, PulseInput.PulseMode.POSITIVE,true);
-			// rightStrobe = ioio.openDigitalOutput(RIGHT_STROBE_ULTRASONIC_OUTPUT_PIN, false);
-			// right = ioio.openPulseInput(new DigitalInput.Spec(RIGHT_ULTRASONIC_INPUT_PIN),
-			// PulseInput.ClockRate.RATE_62KHz, PulseInput.PulseMode.POSITIVE, true);
-			// rightMotorClock = ioio_.openPwmOutput(MOTOR_CLOCK_RIGHT_PIN, rightMotorPWMfrequency);//pin #, frequency right motor
-			// leftMotorClock = ioio_.openPwmOutput(MOTOR_CLOCK_LEFT_PIN, leftMotorPWMfrequency);//pin #, frequency left motor
-			// rightMotorClock.setPulseWidth(pulseWidth);
-			// leftMotorClock.setPulseWidth(pulseWidth);
-			// MediaPlayer mp_file = MediaPlayer.create(this, R.raw.your_song_file);
-			// mp_file.start();
 		}
 
 		/**
 		 * Called repetitively while the IOIO is connected.
-		 * 
-		 * @throws ConnectionLostException
-		 *             When IOIO connection is lost.
-		 * 
-		 * @see ioio.lib.util.AbstractIOIOActivity.IOIOThread#loop()
 		 */
 		@Override
 		public void loop() throws ConnectionLostException
@@ -210,16 +156,11 @@ public class MainActivity extends IOIOActivity
 			log("loop");
 			led_.write(!button_.isChecked());
 			push();
-			//			rightMotorClockPulse.write(true);
-			//			rightMotorClockPulse.write(false);
-			//			SystemClock.sleep(100);
 		}
 
 		private void push()
 		{
-			stepperStepCue_.clk = Clock.CLK_2M;
-			stepperStepCue_.pulseWidth = 10;
-			stepperStepCue_.period = 10000;
+			stepperFMspeedCue_.period = rightStepperMotorPeriod -= 1000;
 			try
 			{
 				sequencer_.push(cue_, 62500);
@@ -231,8 +172,6 @@ public class MainActivity extends IOIOActivity
 
 	/**
 	 * A method to create our IOIO thread.
-	 * 
-	 * @see ioio.lib.util.AbstractIOIOActivity#createIOIOThread()
 	 */
 	@Override
 	protected IOIOLooper createIOIOLooper()
@@ -242,9 +181,6 @@ public class MainActivity extends IOIOActivity
 
 	/**
 	 * Writes a message to the Dashboard instance.
-	 * 
-	 * @param msg
-	 *            the message to write
 	 */
 	public void log(final String msg)
 	{
@@ -258,5 +194,4 @@ public class MainActivity extends IOIOActivity
 			}
 		});
 	}
-
 }
