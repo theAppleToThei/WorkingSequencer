@@ -160,7 +160,7 @@ public class MainActivity extends IOIOActivity
 
 		private void push()
 		{
-			stepperFMspeedCue_.period = rightStepperMotorPeriod -= 1000;
+			stepperFMspeedCue_.period = rightStepperMotorPeriod *= .9;
 			try
 			{
 				sequencer_.push(cue_, 62500);
